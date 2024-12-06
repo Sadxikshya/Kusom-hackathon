@@ -1,0 +1,478 @@
+const bcrypt = require("bcrypt");
+const { v4: uuidv4 } = require("uuid");
+const comparePassword = require("./../utils/comparePassword");
+
+const jwt = require("jsonwebtoken");
+const maxAge = 3 * 24 * 60 * 60;
+
+const createToken = (id, email) => {
+  return jwt.sign(
+    { id: id, email: email },
+    process.env.ACCESS_TOKEN_SECRET_USER,
+    {
+      expiresIn: maxAge,
+    }
+  );
+};
+
+exports.registerUser = (req, res) => {
+  const pool = req.pool;
+  const {
+    name,
+    user_name,
+    password,
+    email,
+    phone_number,
+    address,
+    ward_no,
+    city,
+    profile_pic,
+  } = req.body;
+
+  if (
+    !name ||
+    !user_name ||
+    !password ||
+    !email ||
+    !phone_number ||
+    !address ||
+    !ward_no ||
+    !city ||
+    !profile_pic
+  ) {
+    return res
+      .status(400)
+      .json({ message: "Please provide all required fields." });
+  }
+
+  const userId = uuidv4();
+
+  pool.getConnection((err, connection) => {
+    if (err) {
+      console.error("Error getting database connection:", err);
+      return res
+        .status(500)
+        .json({ message: "Error registering user.", error: err });
+    }
+
+    connection.query(
+      "SELECT email FROM users where email=?",
+      [email],
+      (err, result) => {
+        if (err) {
+          connection.release();
+          console.error("Error checking existing email:", err);
+          return res
+            .status(500)
+            .json({ message: "Error registering user.", error: err });
+        }
+
+        if (result && result.length > 0) {
+          connection.release();
+          return res
+            .status(400)
+            .json({ message: "Email has already been registered." });
+        }
+
+        bcrypt.hash(password, 8, (err, hashedPassword) => {
+          if (err) {
+            connection.release();
+            console.error("Error hashing password:", err);
+            return res
+              .status(500)
+              .json({ message: "Error registering user.", error: err });
+          }
+
+          const query = `
+          INSERT INTO users (
+            user_id, name, user_name, password, email, phone_number, address, ward_no, city, profile_pic
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `;
+          const values = [
+            userId,
+            name,
+            user_name,
+            hashedPassword,
+            email,
+            phone_number,
+            address,
+            ward_no,
+            city,
+            profile_pic,
+          ];
+
+          connection.query(query, values, (err, rows) => {
+            connection.release();
+
+            if (err) {
+              console.error("Error inserting user into database:", err);
+              return res
+                .status(500)
+                .json({ message: "Error registering user.", error: err });
+            }
+
+            // User successfully registered
+            const token = createToken(userId, email); // Assuming createToken function is defined elsewhere
+
+            res.cookie("jwt", token, {
+              httpOnly: true,
+              maxAge: maxAge * 1000, // Assuming maxAge is defined
+            });
+
+            res.status(201).json({ status: "success", user_id: userId });
+          });
+        });
+      }
+    );
+  });
+};
+
+exports.getUserInfo = (req, res) => {
+  const { userId } = req.params;
+
+  // Validate the userId
+  if (!userId) {
+    return res.status(400).json({ message: "User ID is required." });
+  }
+
+  // Query the user info from the database
+  const pool = req.pool;
+
+  const query = `
+    SELECT user_id, name, user_name, email, phone_number, address, ward_no, city, profile_pic
+    FROM users
+    WHERE user_id = ?
+  `;
+
+  pool.query(query, [userId], (error, results) => {
+    if (error) {
+      console.error("Error retrieving user info:", error);
+      if (!res.headersSent) {
+        return res
+          .status(500)
+          .json({ message: "Error retrieving user info.", error });
+      }
+    } else if (results.length === 0) {
+      if (!res.headersSent) {
+        return res.status(404).json({ message: "User not found." });
+      }
+    } else {
+      if (!res.headersSent) {
+        return res.status(200).json(results[0]);
+      }
+    }
+  });
+};
+
+exports.postTask = (req, res) => {
+  const { user_id, post } = req.body;
+
+  // Validate request body
+  if (!user_id || !post.trim()) {
+    return res
+      .status(400)
+      .json({ message: "Please provide all required fields." });
+  }
+
+  const pool = req.pool; // Assuming the pool is provided in req
+  const postId = uuidv4();
+  let selected_status = 0;
+
+  const query = `
+    INSERT INTO post (
+      post_id, user_id, post, selected_status
+    ) VALUES (?, ?, ?, ?)
+  `;
+  const values = [postId, user_id, post, selected_status];
+
+  pool.query(query, values, (error, results) => {
+    if (error) {
+      console.error("Error posting post:", error);
+      return res.status(500).json({ message: "Error posting post." });
+    } else {
+      return res
+        .status(201)
+        .json({ message: "User Post posted successfully." });
+    }
+  });
+};
+
+exports.loginUser = (req, res) => {
+  const { email, password: checkPassword } = req.body;
+  const pool = req.pool;
+  pool.getConnection((err, connection) => {
+    if (err) {
+      console.error("Error getting database connection:", err);
+      return res
+        .status(500)
+        .json({ status: "error", error: "Internal Server Error" });
+    }
+    connection.query(
+      "SELECT user_id, email, password FROM users WHERE email = ?",
+      [email],
+      async (err, result) => {
+        connection.release();
+        if (err) {
+          console.error("Error retrieving user:", err);
+          return res
+            .status(500)
+            .json({ status: "error", error: "Internal Server Error" });
+        }
+        if (result.length === 0) {
+          return res
+            .status(404)
+            .json({ status: "error", error: "User not found" });
+        }
+        if (result.length === 1) {
+          const storedPassword = result[0].password;
+          const storedEmail = result[0].email;
+          const stored_user_id = result[0].user_id;
+
+          try {
+            const passwordsMatch = await comparePassword(
+              checkPassword,
+              storedPassword
+            );
+            if (passwordsMatch) {
+              const token = createToken(stored_user_id, storedEmail);
+              res.cookie("jwt", token, {
+                httpOnly: true,
+                maxAge: maxAge * 1000, // Convert to milliseconds
+              });
+              res.json({
+                status: "success",
+                user_id: stored_user_id,
+                jwt: token,
+              });
+            } else {
+              return res
+                .status(401)
+                .json({ status: "error", error: "Incorrect Password" });
+            }
+          } catch (error) {
+            console.error("Error comparing passwords:", error);
+            return res
+              .status(500)
+              .json({ status: "error", error: "Internal Server Error" });
+          }
+        }
+      }
+    );
+  });
+};
+
+exports.getUserFeed = (req, res) => {
+  const { postId } = req.params;
+
+  // Validate input
+  if (!postId) {
+    return res.status(400).json({ message: "postId is required" });
+  }
+
+  const pool = req.pool;
+
+  pool.getConnection((err, connection) => {
+    if (err) {
+      console.error("Error getting database connection:", err);
+      return res.status(500).json({ message: "Error connecting to database." });
+    }
+
+    const sql = `
+      SELECT i.post_id,  h.handy_name, h.h_field,h.handy_user_name,h.phone_number,h.h_email,h.h_bio,h.h_expertise,h.h_photo,h.h_fee
+      FROM interested i
+      INNER JOIN handyman h ON i.handy_id = h.handy_id
+      WHERE i.post_id = ?
+    `;
+
+    connection.query(sql, [postId], (err, rows) => {
+      connection.release();
+
+      if (err) {
+        console.error("Error executing query:", err);
+        return res
+          .status(500)
+          .json({ message: "Error querying database.", error: err });
+      }
+
+      res.status(200).json({
+        status: "success",
+        results: rows.length,
+        data: { rows },
+      });
+    });
+  });
+};
+exports.postProduct = (req, res) => {
+  const pool = req.pool;
+  const { p_name, p_info, p_img, p_price, p_quality, p_quantity, s_email } =
+    req.body;
+
+  if (
+    !p_name ||
+    !p_info ||
+    !p_img ||
+    !p_price ||
+    !p_quality ||
+    !p_quantity ||
+    !s_email
+  ) {
+    return res
+      .status(400)
+      .json({ message: "Please provide all required fields." });
+  }
+
+  pool.getConnection((err, connection) => {
+    if (err) {
+      console.error("Error getting connection from pool:", err);
+      return res.status(500).json({ message: "Error connecting to database." });
+    }
+
+    const findUserId = `SELECT user_id FROM users where email=?`;
+
+    connection.query(findUserId, [s_email], (err, results) => {
+      if (err) {
+        connection.release();
+        console.error("Error checking existing email:", err);
+        return res
+          .status(500)
+          .json({ message: "Error checking email.", error: err });
+      }
+
+      if (results.length === 0) {
+        connection.release();
+        return res.status(404).json({ message: "Seller not found." });
+      }
+      const p_id = uuidv4();
+
+      const s_id = results[0].user_id;
+      const insertProductQuery =
+        "INSERT INTO product (product_id,p_name, p_info, p_img, p_price, p_quality, p_quantity, seller_id) VALUES (?,?, ?, ?, ?, ?, ?, ?)";
+      const productValues = [
+        p_id,
+        p_name,
+        p_info,
+        p_img,
+        p_price,
+        p_quality,
+        p_quantity,
+        s_id,
+      ];
+
+      connection.query(insertProductQuery, productValues, (err, result) => {
+        connection.release();
+        if (err) {
+          console.error("Error inserting product:", err);
+          return res
+            .status(500)
+            .json({ message: "Error adding product.", error: err });
+        }
+
+        return res.status(201).json({
+          message: "Product added successfully.",
+          productId: p_id,
+        });
+      });
+    });
+  });
+};
+
+exports.getInterestedData = (req, res) => {
+  const { postId } = req.params;
+  const pool = req.pool;
+
+  // Query to fetch handy_id and post from interested table
+  const query = `
+    SELECT handy_id, post_id, post
+    FROM interested
+    WHERE post_id = ? AND interested_status = 1
+  `;
+
+  pool.query(query, [postId], (error, results) => {
+    if (error) {
+      console.error("Error fetching interested data:", error);
+      return res.status(500).json({ error: "Error fetching interested data" });
+    }
+
+    // Assuming results contains handy_id among other fields
+    if (results.length === 0) {
+      return res
+        .status(404)
+        .json({ message: "No interested data found for the postId" });
+    }
+
+    const handyIds = results.map((row) => row.handy_id);
+
+    // Query to fetch handyman information based on handy_id
+    const handymanQuery = `
+      SELECT *
+      FROM handyman
+      WHERE handy_id IN (?)
+    `;
+
+    pool.query(handymanQuery, [handyIds], (err, handymanResults) => {
+      if (err) {
+        console.error("Error fetching handyman data:", err);
+        return res.status(500).json({ error: "Error fetching handyman data" });
+      }
+
+      // Combine the original results with handyman information
+      const combinedResults = results.map((row) => {
+        const handymanInfo = handymanResults.find(
+          (handyman) => handyman.handy_id === row.handy_id
+        );
+        return {
+          handy_id: row.handy_id,
+          post_id: row.post_id,
+          post: row.post,
+          handyman: handymanInfo, // Include handyman information
+        };
+      });
+
+      res.status(200).json({ interestedData: combinedResults });
+    });
+  });
+};
+exports.getPost = (req, res) => {
+  const { userId } = req.params;
+
+  // Validate input
+  if (!userId) {
+    return res.status(400).json({ message: "userId is required" });
+  }
+
+  const pool = req.pool;
+
+  pool.getConnection((err, connection) => {
+    if (err) {
+      console.error("Error getting database connection:", err);
+      return res.status(500).json({ message: "Error connecting to database." });
+    }
+
+    const sql = `SELECT post_id, post, selected_status FROM post WHERE user_id = ?`;
+
+    connection.query(sql, [userId], (err, rows) => {
+      connection.release();
+
+      if (err) {
+        console.error("Error executing query:", err);
+        return res
+          .status(500)
+          .json({ message: "Error querying database.", error: err });
+      }
+
+      console.log("Query executed successfully, rows:", rows); // Added for debugging
+
+      if (rows.length === 0) {
+        return res
+          .status(404)
+          .json({ message: "No posts found for this user." });
+      } else {
+        res.status(200).json({
+          status: "success",
+          results: rows.length,
+          data: { rows },
+        });
+      }
+    });
+  });
+};

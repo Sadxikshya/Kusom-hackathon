@@ -1,0 +1,15 @@
+require("dotenv").config();
+
+const express = require("express");
+const handyController = require("../controllers/handyController");
+const handyAuthmiddleware = require("../Middleware/handyAuthMiddleware");
+const router = express.Router();
+
+router.post("/register", handyController.registerHandyman); //eslai middleware bata contoller ma lagnu xa
+router.post("/login", handyController.loginHandy);
+router.route("/:handyId").get(handyController.getHandymanInfo);
+router.get("/post/:handyId", handyController.getHandyFeed);
+router.put("/updateInterest/:handyId", handyController.updateInterestStatus);
+router.post("/postProduct", handyController.postProduct);
+// router.post("/getProducts", handyController.getProducts);
+module.exports = router;
