@@ -1,1 +1,1 @@
-Me and My Team made this project for KUSOM Hackathon 2024.
+Collaborated with my team to make this project for KUSOM Hackathon 2024.
